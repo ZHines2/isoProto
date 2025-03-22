@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Isometric Dungeon Construction</title>
+  <style>
+    body {
+      background-color: #222;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      font-family: sans-serif;
+    }
+    canvas {
+      border: 2px solid #fff;
+      background-color: #000;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="dungeonCanvas" width="800" height="600"></canvas>
+  <script>
+    // ----- CONSTANTS & GLOBALS -----
+    const GRID_SIZE = 25;
+    const FLOOR_COUNT = 25;
+    const TILE_WIDTH = 32;
+    const TILE_HEIGHT = 16;
+    const WALKERS = 3;
+    const STEPS_PER_WALKER = 300;
+
+    let dungeon = []; // 3D array: dungeon[floor][row][col]
+    let playerX, playerY, playerFloor;
+    let gameStarted = false;
+
+    const canvas = document.getElementById("dungeonCanvas");
+    const ctx = canvas.getContext("2d");
+
+    // ----- BFS CONNECTIVITY & CORRIDOR CARVING -----
+    function isFloorConnected(z) {
+      let start = null;
+      for (let y = 0; y < GRID_SIZE; y++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          if (["floor", "up", "down"].includes(dungeon[z][y][x])) {
+            start = { x, y };
+            break;
+          }
+        }
+        if (start) break;
+      }
+      if (!start) return true;
+
+      let visited = new Set();
+      let queue = [start];
+      visited.add(`${start.x},${start.y}`);
+
+      while (queue.length) {
+        let { x, y } = queue.shift();
+        const dirs = [{dx:1, dy:0}, {dx:-1, dy:0}, {dx:0, dy:1}, {dx:0, dy:-1}];
+        for (let d of dirs) {
+          let nx = x + d.dx, ny = y + d.dy;
+          if (nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE) {
+            let cell = dungeon[z][ny][nx];
+            if (["floor", "up", "down"].includes(cell) && !visited.has(`${nx},${ny}`)) {
+              visited.add(`${nx},${ny}`);
+              queue.push({ x: nx, y: ny });
+            }
+          }
+        }
+      }
+
+      for (let y = 0; y < GRID_SIZE; y++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          let cell = dungeon[z][y][x];
+          if (["floor", "up", "down"].includes(cell) && !visited.has(`${x},${y}`)) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+
+    function carveCorridorBetweenCells(z, x1, y1, x2, y2) {
+      let curX = x1, curY = y1;
+      while (curX !== x2) {
+        dungeon[z][curY][curX] = "floor";
+        curX += (x2 > curX ? 1 : -1);
+      }
+      while (curY !== y2) {
+        dungeon[z][curY][curX] = "floor";
+        curY += (y2 > curY ? 1 : -1);
+      }
+      dungeon[z][curY][curX] = "floor";
+    }
+
+    function ensureFloorConnectivity(z) {
+      if (isFloorConnected(z)) return;
+
+      let start = null;
+      let visited = new Set();
+      let queue = [];
+      for (let y = 0; y < GRID_SIZE; y++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          if (["floor", "up", "down"].includes(dungeon[z][y][x])) {
+            start = { x, y };
+            break;
+          }
+        }
+        if (start) break;
+      }
+      if (!start) return;
+
+      queue.push(start);
+      visited.add(`${start.x},${start.y}`);
+
+      while (queue.length) {
+        let { x, y } = queue.shift();
+        for (let d of [{dx:1, dy:0}, {dx:-1, dy:0}, {dx:0, dy:1}, {dx:0, dy:-1}]) {
+          let nx = x + d.dx, ny = y + d.dy;
+          if (nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE) {
+            let cell = dungeon[z][ny][nx];
+            if (["floor", "up", "down"].includes(cell) && !visited.has(`${nx},${ny}`)) {
+              visited.add(`${nx},${ny}`);
+              queue.push({ x: nx, y: ny });
+            }
+          }
+        }
+      }
+
+      for (let y = 0; y < GRID_SIZE; y++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          let cell = dungeon[z][y][x];
+          if (["floor", "up", "down"].includes(cell) && !visited.has(`${x},${y}`)) {
+            carveCorridorBetweenCells(z, start.x, start.y, x, y);
+            ensureFloorConnectivity(z);
+            return;
+          }
+        }
+      }
+    }
+
+    // ----- DUNGEON GENERATION -----
+    function buildFloors() {
+      for (let z = 0; z < FLOOR_COUNT; z++) {
+        // Initialize each floor with walls.
+        dungeon[z] = [];
+        for (let y = 0; y < GRID_SIZE; y++) {
+          dungeon[z][y] = [];
+          for (let x = 0; x < GRID_SIZE; x++) {
+            dungeon[z][y][x] = "wall";
+          }
+        }
+        // Carve out floors using random walkers.
+        for (let w = 0; w < WALKERS; w++) {
+          let currentX = (w === 0) ? Math.floor(GRID_SIZE / 2) : Math.floor(Math.random() * GRID_SIZE);
+          let currentY = (w === 0) ? Math.floor(GRID_SIZE / 2) : Math.floor(Math.random() * GRID_SIZE);
+          dungeon[z][currentY][currentX] = "floor";
+          for (let i = 0; i < STEPS_PER_WALKER; i++) {
+            const direction = Math.floor(Math.random() * 4);
+            if (direction === 0 && currentY > 0) currentY--;
+            else if (direction === 1 && currentX < GRID_SIZE - 1) currentX++;
+            else if (direction === 2 && currentY < GRID_SIZE - 1) currentY++;
+            else if (direction === 3 && currentX > 0) currentX--;
+            dungeon[z][currentY][currentX] = "floor";
+          }
+        }
+        ensureFloorConnectivity(z);
+      }
+    }
+
+    // ----- STAIRS BETWEEN FLOORS -----
+    function hasOrthogonalAdjacentFloor(z, x, y) {
+      const dirs = [{dx:1, dy:0}, {dx:-1, dy:0}, {dx:0, dy:1}, {dx:0, dy:-1}];
+      for (let d of dirs) {
+        let nx = x + d.dx, ny = y + d.dy;
+        if (nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE) {
+          if (["floor", "up", "down"].includes(dungeon[z][ny][nx])) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    function guaranteedStairPlacement(z) {
+      for (let y = 0; y < GRID_SIZE; y++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          if (dungeon[z][y][x] === "floor" && dungeon[z+1][y][x] === "floor") {
+            dungeon[z][y][x] = "up";
+            dungeon[z+1][y][x] = "down";
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    function addStairsFirstPass() {
+      for (let z = 0; z < FLOOR_COUNT - 1; z++) {
+        let added = false;
+        for (let attempt = 0; attempt < 200; attempt++) {
+          const stairX = Math.floor(Math.random() * GRID_SIZE);
+          const stairY = Math.floor(Math.random() * GRID_SIZE);
+          if (
+            dungeon[z][stairY][stairX] === "floor" &&
+            dungeon[z+1][stairY][stairX] === "floor" &&
+            hasOrthogonalAdjacentFloor(z, stairX, stairY)
+          ) {
+            dungeon[z][stairY][stairX] = "up";
+            dungeon[z+1][stairY][stairX] = "down";
+            added = true;
+            break;
+          }
+        }
+        if (!added && !guaranteedStairPlacement(z)) {
+          console.log("Failed to add stairs between floors", z, "and", z+1);
+        }
+      }
+    }
+
+    function addStairsSecondPass() {
+      for (let z = 1; z < FLOOR_COUNT; z++) {
+        let hasDown = false;
+        for (let y = 0; y < GRID_SIZE; y++) {
+          for (let x = 0; x < GRID_SIZE; x++) {
+            if (dungeon[z][y][x] === "down") {
+              hasDown = true;
+              break;
+            }
+          }
+          if (hasDown) break;
+        }
+        if (!hasDown) {
+          for (let y = 0; y < GRID_SIZE; y++) {
+            for (let x = 0; x < GRID_SIZE; x++) {
+              if (
+                dungeon[z-1][y][x] === "floor" &&
+                dungeon[z][y][x] === "floor" &&
+                hasOrthogonalAdjacentFloor(z-1, x, y)
+              ) {
+                dungeon[z-1][y][x] = "up";
+                dungeon[z][y][x] = "down";
+                hasDown = true;
+                break;
+              }
+            }
+            if (hasDown) break;
+          }
+          if (!hasDown) {
+            console.log("Failed to add a down stair on floor", z);
+          }
+        }
+      }
+      for (let z = 0; z < FLOOR_COUNT - 1; z++) {
+        let hasUp = false;
+        for (let y = 0; y < GRID_SIZE; y++) {
+          for (let x = 0; x < GRID_SIZE; x++) {
+            if (dungeon[z][y][x] === "up") {
+              hasUp = true;
+              break;
+            }
+          }
+          if (hasUp) break;
+        }
+        if (!hasUp) {
+          for (let y = 0; y < GRID_SIZE; y++) {
+            for (let x = 0; x < GRID_SIZE; x++) {
+              if (
+                dungeon[z][y][x] === "floor" &&
+                dungeon[z+1][y][x] === "floor" &&
+                hasOrthogonalAdjacentFloor(z, x, y)
+              ) {
+                dungeon[z][y][x] = "up";
+                dungeon[z+1][y][x] = "down";
+                hasUp = true;
+                break;
+              }
+            }
+            if (hasUp) break;
+          }
+          if (!hasUp) {
+            console.log("Failed to add an up stair on floor", z);
+          }
+        }
+      }
+    }
+
+    function addStairs() {
+      addStairsFirstPass();
+      addStairsSecondPass();
+    }
+
+    // ----- ISOMETRIC RENDERING -----
+    function toIsometric(x, y) {
+      const isoX = (x - y) * (TILE_WIDTH / 2) + canvas.width / 2;
+      const isoY = (x + y) * (TILE_HEIGHT / 2) + 50;
+      return { isoX, isoY };
+    }
+
+    function drawTile(x, y, color) {
+      const { isoX, isoY } = toIsometric(x, y);
+      ctx.beginPath();
+      ctx.moveTo(isoX, isoY);
+      ctx.lineTo(isoX + TILE_WIDTH / 2, isoY + TILE_HEIGHT / 2);
+      ctx.lineTo(isoX, isoY + TILE_HEIGHT);
+      ctx.lineTo(isoX - TILE_WIDTH / 2, isoY + TILE_HEIGHT / 2);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = "#111";
+      ctx.stroke();
+    }
+
+    // ----- DRAWING THE DUNGEON -----
+    function drawDungeon() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Center camera on the player.
+      const playerIso = toIsometric(playerX, playerY);
+      const cameraOffsetX = playerIso.isoX - canvas.width / 2;
+      const cameraOffsetY = playerIso.isoY - canvas.height / 2;
+      ctx.save();
+      ctx.translate(-cameraOffsetX, -cameraOffsetY);
+
+      for (let y = 0; y < GRID_SIZE; y++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+          const cell = dungeon[playerFloor][y][x];
+          let color;
+          if (cell === "floor") color = "#bbb";
+          else if (cell === "wall") color = "#333";
+          else if (cell === "up") color = "#4caf50";
+          else if (cell === "down") color = "#2196f3";
+          else color = "#000";
+          drawTile(x, y, color);
+        }
+      }
+      // Draw the player.
+      const { isoX, isoY } = toIsometric(playerX, playerY);
+      ctx.beginPath();
+      ctx.moveTo(isoX, isoY);
+      ctx.lineTo(isoX + TILE_WIDTH / 2, isoY + TILE_HEIGHT / 2);
+      ctx.lineTo(isoX, isoY + TILE_HEIGHT);
+      ctx.lineTo(isoX - TILE_WIDTH / 2, isoY + TILE_HEIGHT / 2);
+      ctx.closePath();
+      ctx.fillStyle = "#e74c3c";
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // ----- GAME LOOP -----
+    function gameLoop() {
+      drawDungeon();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // ----- PLAYER MOVEMENT -----
+    document.addEventListener("keydown", (e) => {
+      if (!gameStarted) return;
+      let newX = playerX;
+      let newY = playerY;
+      switch(e.key) {
+        case "ArrowUp":    newY--; break;
+        case "ArrowDown":  newY++; break;
+        case "ArrowLeft":  newX--; break;
+        case "ArrowRight": newX++; break;
+        default: return;
+      }
+      if (newX >= 0 && newX < GRID_SIZE && newY >= 0 && newY < GRID_SIZE) {
+        const target = dungeon[playerFloor][newY][newX];
+        if (["floor", "up", "down"].includes(target)) {
+          playerX = newX;
+          playerY = newY;
+          if (target === "up" && playerFloor < FLOOR_COUNT - 1) {
+            playerFloor++;
+          } else if (target === "down" && playerFloor > 0) {
+            playerFloor--;
+          }
+        }
+      }
+    });
+
+    // ----- INITIALIZE GAME -----
+    function drawWelcomeScreen() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#fff";
+      ctx.font = "32px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("3D Isometric Dungeon", canvas.width / 2, canvas.height / 2 - 20);
+      ctx.font = "20px sans-serif";
+      ctx.fillText("Press SPACE to start", canvas.width / 2, canvas.height / 2 + 20);
+    }
+    drawWelcomeScreen();
+
+    document.addEventListener("keydown", (e) => {
+      if (e.code === "Space" && !gameStarted) {
+        gameStarted = true;
+        buildFloors();
+        addStairs();
+        // Find a starting position on floor 0.
+        for (let y = 0; y < GRID_SIZE; y++) {
+          for (let x = 0; x < GRID_SIZE; x++) {
+            if (dungeon[0][y][x] === "floor") {
+              playerX = x;
+              playerY = y;
+              break;
+            }
+          }
+          if (playerX !== undefined) break;
+        }
+        playerFloor = 0;
+        gameLoop();
+      }
+    });
+  </script>
+</body>
+</html>
